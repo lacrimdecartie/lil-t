@@ -1,0 +1,13 @@
+services:
+  lil-t:
+    build: .
+    image: lil-t:latest
+    container_name: lil-t
+    ports:
+      - "39093:3000"  # erreichbar unter http://10.0.1.15:39093
+    environment:
+      - NODE_ENV=production
+      - /mnt/user/appdata/lil-t/data:/app/data/app.db
+    volumes:
+      - /mnt/user/appdata/lil-t/data:/app/data
+    restart: unless-stopped

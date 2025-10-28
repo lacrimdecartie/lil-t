@@ -1,0 +1,207 @@
+// @ts-nocheck
+"use client";
+
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import ReactFlow, {
+  Background, Controls, MiniMap,
+  addEdge, MarkerType,
+  useNodesState, useEdgesState, useReactFlow, ReactFlowProvider,
+  ConnectionMode
+} from "reactflow";
+import "reactflow/dist/style.css";
+
+import ParallelBezier from "@/components/edges/ParallelBezier";
+
+import EditableNode from "@/components/nodes/EditableNode";
+import ContextMenu, { type MenuItem } from "@/components/ContextMenu";
+
+// --- Auto-Handle-Picker: wählt für zwei Knoten die kürzeste Seiten-Kombi ---
+function pickAutoHandles(rf: any, sourceId?: string|null, targetId?: string|null) {
+  if (!sourceId || !targetId) return {};
+  const s = rf.getNode(String(sourceId));
+  const t = rf.getNode(String(targetId));
+  if (!s || !t || !s.positionAbsolute || !t.positionAbsolute) return {};
+
+  const sW = (s.width ?? (s as any).measured?.width ?? 0);
+  const sH = (s.height ?? (s as any).measured?.height ?? 0);
+  const tW = (t.width ?? (t as any).measured?.width ?? 0);
+  const tH = (t.height ?? (t as any).measured?.height ?? 0);
+
+  const sX = s.positionAbsolute.x, sY = s.positionAbsolute.y;
+  const tX = t.positionAbsolute.x, tY = t.positionAbsolute.y;
+
+  const sPts: Record<string,[number,number]> = {
+    L:[sX, sY+sH/2], R:[sX+sW, sY+sH/2], T:[sX+sW/2, sY], B:[sX+sW/2, sY+sH]
+  };
+  const tPts: Record<string,[number,number]> = {
+    L:[tX, tY+tH/2], R:[tX+tW, tY+tH/2], T:[tX+tW/2, tY], B:[tX+tW/2, tY+tH]
+  };
+
+  // Heuristik: bevorzuge horizontale Kanten, wenn dx dominanter ist, sonst vertikale
+  const dx = (tX + tW/2) - (sX + sW/2);
+  const dy = (tY + tH/2) - (sY + sH/2);
+  const preferH = Math.abs(dx) >= Math.abs(dy);
+  const sOrder = preferH ? (dx >= 0 ? ["R","L","T","B"] : ["L","R","T","B"])
+                         : (dy >= 0 ? ["B","T","L","R"] : ["T","B","L","R"]);
+  const tOrder = preferH ? (dx >= 0 ? ["L","R","T","B"] : ["R","L","T","B"])
+                         : (dy >= 0 ? ["T","B","L","R"] : ["B","T","L","R"]);
+
+  let best: any = null;
+  for (const sk of sOrder) {
+    for (const tk of tOrder) {
+      const [ax,ay] = sPts[sk];
+      const [bx,by] = tPts[tk];
+      const d2 = (ax-bx)*(ax-bx) + (ay-by)*(ay-by);
+      const nonPref = preferH ? ((sk==="T"||sk==="B"||tk==="T"||tk==="B"))
+                              : ((sk==="L"||sk==="R"||tk==="L"||tk==="R"));
+      const score = d2 + (nonPref ? 400 : 0);
+      if (!best || score < best.score) best = { sk, tk, score };
+    }
+  }
+  return best ? { sourceHandle: `${best.sk}-src`, targetHandle: `${best.tk}-tgt` } : {};
+}
+
+const nodeTypes = { editable: EditableNode };
+
+const edgeTypes = { parallel: ParallelBezier };
+
+
+function Inner() {
+  const mapId = "default-map";
+  const [nodes, setNodes, onNodesChange] = useNodesState([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  const rf = useReactFlow();
+
+  // Für Pane-Koordinaten
+  const wrapRef = useRef<HTMLDivElement|null>(null);
+
+  // Kontextmenü-Zustand für Pane (leere Fläche)
+  const [paneCtx, setPaneCtx] = useState<{open:boolean,x:number,y:number}>({open:false,x:0,y:0});
+
+  // Initial: Nodes laden, dann Edges mit Auto-Handles setzen
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const ns = await fetch(`/api/nodes?mapId=${mapId}`).then(r=>r.json());
+      const es = await fetch(`/api/edges?mapId=${mapId}`).then(r=>r.json());
+
+      if (!alive) return;
+      setNodes(ns.map((n:any) => ({
+        id: String(n.id),
+        type: "editable",
+        position: { x: n.x ?? 0, y: n.y ?? 0 },
+        data: { label: n.label, color: n.color ?? "#FBBF24" }
+      })));
+
+      requestAnimationFrame(() => {
+        if (!alive) return;
+        setEdges(() => es.map((e:any) => {
+          const h = pickAutoHandles(rf, e.sourceId, e.targetId);
+          return {
+            id: String(e.id),
+            source: String(e.sourceId),
+            target: String(e.targetId),
+            sourceHandle: h.sourceHandle,
+            targetHandle: h.targetHandle,
+            type: "parallel",
+            markerEnd: { type: MarkerType.ArrowClosed },
+          };
+        }));
+      });
+    })();
+    return () => { alive = false; };
+  }, [mapId, rf, setNodes, setEdges]);
+
+  // Verbinden durch Ziehen (Drag & Drop)
+  const onConnect = useCallback((params: any) => {
+    const { sourceHandle, targetHandle } = pickAutoHandles(rf, params.source, params.target);
+    setEdges((eds:any[]) =>
+      addEdge(
+        { ...params, sourceHandle, targetHandle, type: "parallel", markerEnd: { type: MarkerType.ArrowClosed } },
+        eds
+      )
+    );
+  }, [rf, setEdges]);
+
+  // Nach Drag: betroffene Edges neu ausrichten (kürzeste Strecke)
+  const onNodeDragStop = useCallback((_e:any, node:any) => {
+    setEdges((eds:any[]) => eds.map((e:any) => {
+      if (e.source !== node.id && e.target !== node.id) return e;
+      const h = pickAutoHandles(rf, e.source, e.target);
+      return { ...e, sourceHandle: h.sourceHandle, targetHandle: h.targetHandle };
+    }));
+  }, [rf, setEdges]);
+
+  // Rechtsklick ins Leere → Menü öffnen
+  const onPaneContextMenu = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    setPaneCtx({ open: true, x: e.clientX, y: e.clientY });
+  }, []);
+
+  const closePaneMenu = useCallback(() => setPaneCtx(s => ({...s, open:false})), []);
+
+  // Aktion: Knoten an Cursorposition erstellen
+  const createNodeHere = useCallback(async () => {
+    if (!wrapRef.current) return closePaneMenu();
+    const rect = wrapRef.current.getBoundingClientRect();
+    const flowPt = rf.project({ x: paneCtx.x - rect.left, y: paneCtx.y - rect.top });
+
+    const res = await fetch(`/api/nodes`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mapId, label: "Neuer Knoten", x: flowPt.x, y: flowPt.y, color: "#FDE68A" }),
+    });
+    const n = await res.json();
+    setNodes(nds => [...nds, {
+      id: String(n.id),
+      type: "editable",
+      position: { x: n.x ?? flowPt.x, y: n.y ?? flowPt.y },
+      data: { label: n.label, color: n.color ?? "#FDE68A" }
+    }]);
+    closePaneMenu();
+  }, [rf, paneCtx.x, paneCtx.y, closePaneMenu, setNodes]);
+
+  const paneMenuItems: MenuItem[] = [
+    { label: "Knoten hier erstellen", onClick: createNodeHere },
+  ];
+
+  return (
+    <div ref={wrapRef} className="w-full h-[calc(100vh-64px)]">
+      <ReactFlow
+        nodes={nodes}
+        edges={edges}
+        onNodesChange={onNodesChange}
+        onEdgesChange={onEdgesChange}
+        onConnect={onConnect}
+        onNodeDragStop={onNodeDragStop}
+        nodeTypes={nodeTypes}
+          edgeTypes={edgeTypes}
+        connectionMode={ConnectionMode.Loose}
+        defaultEdgeOptions={{ type: "parallel", markerEnd: { type: MarkerType.ArrowClosed } }}
+        onPaneContextMenu={onPaneContextMenu}
+        fitView
+      >
+        <Background />
+        <MiniMap pannable zoomable />
+        <Controls />
+      </ReactFlow>
+
+      {/* Kontextmenü – leere Fläche */}
+      <ContextMenu
+        open={paneCtx.open}
+        x={paneCtx.x}
+        y={paneCtx.y}
+        items={paneMenuItems}
+        onClose={closePaneMenu}
+      />
+    </div>
+  );
+}
+
+export default function Editor() {
+  return (
+    <ReactFlowProvider>
+      <Inner />
+    </ReactFlowProvider>
+  );
+}

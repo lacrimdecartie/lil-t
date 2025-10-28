@@ -1,0 +1,53 @@
+// @ts-nocheck
+"use client";
+
+import React from "react";
+import { BaseEdge, getBezierPath, EdgeLabelRenderer, type EdgeProps } from "reactflow";
+
+function h(str: string): number { let x=0; for (let i=0;i<str.length;i++) x=(x*31+str.charCodeAt(i))|0; return Math.abs(x); }
+
+export default function ParallelBezier(props: EdgeProps) {
+  const {
+    id, sourceX, sourceY, targetX, targetY,
+    sourcePosition, targetPosition, markerEnd, style, data, label
+  } = props;
+
+  const step = Number((data && data.parIndex) ?? 0);
+  const fallback = ((h(String(id)) % 5) - 2) || 1;
+  const k = step !== 0 ? step : fallback * 0.5;
+
+  const base = 0.25;
+  const spacing = 0.09;
+  const curvature = base + k * spacing;
+
+  const [path, labelX, labelY] = getBezierPath({
+    sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, curvature
+  });
+
+  const edgeLabel = (data && data.label) ?? label ?? "";
+
+  return (
+    <>
+      <BaseEdge path={path} markerEnd={markerEnd} style={style} />
+      {edgeLabel ? (
+        <EdgeLabelRenderer>
+          <div
+            style={{
+              position: "absolute",
+              transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
+              pointerEvents: "auto",
+              fontSize: 12,
+              background: "rgba(255,255,255,0.8)",
+              padding: "2px 6px",
+              borderRadius: 8,
+              border: "1px solid rgba(0,0,0,0.08)",
+            }}
+            className="nodrag nopan"
+          >
+            {edgeLabel}
+          </div>
+        </EdgeLabelRenderer>
+      ) : null}
+    </>
+  );
+}

@@ -1,0 +1,150 @@
+nohup: ignoring input
+=== Sun Oct 26 13:07:25 CET 2025 | lil-t Build/Start beginnt ===
+Arbeitsverzeichnis: /mnt/user/appdata/lil-t
+→ Setze Berechtigungen ...
+→ docker compose build ...
+--progress is a global compose flag, better use `docker compose --progress xx build ...
+Compose can now delegate builds to bake for better performance.
+ To do so, set COMPOSE_BAKE=true.
+#0 building with "default" instance using docker driver
+
+#1 [lil-t internal] load build definition from Dockerfile
+#1 transferring dockerfile: 1.25kB done
+#1 DONE 0.0s
+
+#2 [lil-t internal] load metadata for docker.io/library/node:20-alpine
+#2 DONE 0.9s
+
+#3 [lil-t internal] load .dockerignore
+#3 transferring context: 2B done
+#3 DONE 0.0s
+
+#4 [lil-t builder 1/8] FROM docker.io/library/node:20-alpine@sha256:6178e78b972f79c335df281f4b7674a2d85071aae2af020ffa39f0a770265435
+#4 DONE 0.0s
+
+#5 [lil-t builder 2/8] WORKDIR /app
+#5 CACHED
+
+#6 [lil-t runner 3/9] RUN apk add --no-cache libc6-compat
+#6 CACHED
+
+#7 [lil-t internal] load build context
+#7 transferring context: 15.05kB 0.0s done
+#7 DONE 0.1s
+
+#8 [lil-t builder 3/8] RUN corepack enable && corepack prepare pnpm@9.0.0 --activate
+#8 CACHED
+
+#9 [lil-t builder 4/8] COPY package.json pnpm-lock.yaml* ./
+#9 CACHED
+
+#10 [lil-t builder 5/8] RUN pnpm install
+#10 CACHED
+
+#11 [lil-t builder 6/8] COPY . .
+#11 DONE 0.1s
+
+#12 [lil-t builder 7/8] RUN pnpm prisma generate
+#12 0.842 prisma:warn Prisma failed to detect the libssl/openssl version to use, and may not work as expected. Defaulting to "openssl-1.1.x".
+#12 0.842 Please manually install OpenSSL and try installing Prisma again.
+#12 0.927 Prisma schema loaded from prisma/schema.prisma
+#12 0.955 prisma:warn Prisma failed to detect the libssl/openssl version to use, and may not work as expected. Defaulting to "openssl-1.1.x".
+#12 0.955 Please manually install OpenSSL and try installing Prisma again.
+#12 1.197 
+#12 1.197 ✔ Generated Prisma Client (v5.18.0) to ./node_modules/.pnpm/@prisma+client@5.18.0_prisma@5.18.0/node_modules/@prisma/client in 43ms
+#12 1.197 
+#12 1.197 Start by importing your Prisma Client (See: http://pris.ly/d/importing-client)
+#12 1.197 
+#12 1.197 Tip: Interested in query caching in just a few lines of code? Try Accelerate today! https://pris.ly/tip-3-accelerate
+#12 1.197 
+#12 DONE 1.5s
+
+#13 [lil-t builder 8/8] RUN pnpm build
+#13 0.572 
+#13 0.572 > lil-t@0.1.0 build /app
+#13 0.572 > next build
+#13 0.572 
+#13 1.026 Attention: Next.js now collects completely anonymous telemetry regarding usage.
+#13 1.027 This information is used to shape Next.js' roadmap and prioritize features.
+#13 1.027 You can learn more, including how to opt-out if you'd not like to participate in this anonymous program, by visiting the following URL:
+#13 1.027 https://nextjs.org/telemetry
+#13 1.027 
+#13 1.069   ▲ Next.js 14.2.5
+#13 1.069 
+#13 1.118    Creating an optimized production build ...
+#13 8.497  ✓ Compiled successfully
+#13 8.497    Linting and checking validity of types ...
+#13 8.552 It looks like you're trying to use TypeScript but do not have the required package(s) installed.
+#13 8.552 Installing dependencies
+#13 8.552 
+#13 8.552 If you are not trying to use TypeScript, please remove the tsconfig.json file from your package root (and any TypeScript files in your pages directory).
+#13 8.552 
+#13 11.08 
+#13 11.08 Installing devDependencies (pnpm):
+#13 11.08 - @types/react
+#13 11.08 - @types/node
+#13 11.08 
+#13 11.56 Progress: resolved 0, reused 1, downloaded 0, added 0
+#13 12.57 Progress: resolved 11, reused 11, downloaded 0, added 0
+#13 14.05 Progress: resolved 12, reused 11, downloaded 0, added 0
+#13 15.05 Progress: resolved 193, reused 182, downloaded 1, added 0
+#13 16.63 Progress: resolved 194, reused 182, downloaded 1, added 0
+#13 17.63 Progress: resolved 194, reused 182, downloaded 3, added 0
+#13 19.18 Progress: resolved 195, reused 182, downloaded 3, added 0
+#13 20.18 Progress: resolved 202, reused 190, downloaded 4, added 0
+#13 21.75 Progress: resolved 203, reused 190, downloaded 4, added 0
+#13 21.85 Packages: +12 -8
+#13 21.85 ++++++++++++--------
+#13 21.89 Progress: resolved 205, reused 193, downloaded 4, added 12, done
+#13 22.01 
+#13 22.01 devDependencies:
+#13 22.01 + @types/node 24.9.1
+#13 22.01 + @types/react 19.2.2
+#13 22.01 
+#13 22.01 Done in 10.8s
+#13 22.08 
+#13 22.22 
+#13 22.22    We detected TypeScript in your project and reconfigured your tsconfig.json file for you. Strict-mode is set to false by default.
+#13 22.22    The following suggested values were added to your tsconfig.json. These values can be changed to fit your project's needs:
+#13 22.22 
+#13 22.22    	- allowJs was set to true
+#13 22.22    	- skipLibCheck was set to true
+#13 22.22    	- incremental was set to true
+#13 22.22    	- include was updated to add '.next/types/**/*.ts'
+#13 22.22    	- plugins was updated to add { name: 'next' }
+#13 22.22 
+#13 22.22    The following mandatory changes were made to your tsconfig.json:
+#13 22.22 
+#13 22.22    	- isolatedModules was set to true (requirement for SWC / Babel)
+#13 22.22 
+#13 23.68 Failed to compile.
+#13 23.68 
+#13 23.68 ./components/Editor.tsx:51:14
+#13 23.68 Type error: Argument of type 'Node<NodeData>[]' is not assignable to parameter of type 'SetStateAction<Node<Node<NodeData>, string | undefined>[]>'.
+#13 23.68   Type 'Node<NodeData>[]' is not assignable to type 'Node<Node<NodeData>, string | undefined>[]'.
+#13 23.68     Type 'Node<NodeData>' is not assignable to type 'Node<Node<NodeData>, string | undefined>'.
+#13 23.68       Type 'NodeData' is missing the following properties from type 'Node<NodeData>': id, position, data
+#13 23.68 
+#13 23.68 [0m [90m 49 |[39m     }))[33m;[39m[0m
+#13 23.68 [0m [90m 50 |[39m[0m
+#13 23.68 [0m[31m[1m>[22m[39m[90m 51 |[39m     setNodes(mappedNodes)[33m;[39m[0m
+#13 23.68 [0m [90m    |[39m              [31m[1m^[22m[39m[0m
+#13 23.68 [0m [90m 52 |[39m     setEdges(mappedEdges)[33m;[39m[0m
+#13 23.68 [0m [90m 53 |[39m   }[33m,[39m [mapId[33m,[39m setNodes[33m,[39m setEdges])[33m;[39m[0m
+#13 23.68 [0m [90m 54 |[39m[0m
+#13 23.74  ELIFECYCLE  Command failed with exit code 1.
+#13 ERROR: process "/bin/sh -c pnpm build" did not complete successfully: exit code: 1
+------
+ > [lil-t builder 8/8] RUN pnpm build:
+23.68       Type 'NodeData' is missing the following properties from type 'Node<NodeData>': id, position, data
+23.68 
+23.68 [0m [90m 49 |[39m     }))[33m;[39m[0m
+23.68 [0m [90m 50 |[39m[0m
+23.68 [0m[31m[1m>[22m[39m[90m 51 |[39m     setNodes(mappedNodes)[33m;[39m[0m
+23.68 [0m [90m    |[39m              [31m[1m^[22m[39m[0m
+23.68 [0m [90m 52 |[39m     setEdges(mappedEdges)[33m;[39m[0m
+23.68 [0m [90m 53 |[39m   }[33m,[39m [mapId[33m,[39m setNodes[33m,[39m setEdges])[33m;[39m[0m
+23.68 [0m [90m 54 |[39m[0m
+23.74  ELIFECYCLE  Command failed with exit code 1.
+------
+failed to solve: process "/bin/sh -c pnpm build" did not complete successfully: exit code: 1

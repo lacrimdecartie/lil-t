@@ -1,0 +1,200 @@
+// @ts-nocheck
+"use client";
+
+import React, { useCallback, useEffect } from "react";
+import ReactFlow, {
+  Background, Controls, MiniMap,
+  addEdge, MarkerType,
+  useNodesState, useEdgesState, useReactFlow, ReactFlowProvider,
+  ConnectionMode
+} from "reactflow";
+import "reactflow/dist/style.css";
+
+import EditableNode from "@/components/nodes/EditableNode";
+
+// ------------- Helper: Distanzen & Handle-Wahl -----------------
+
+// Liefert alle 16 Seiten-Kombinationen (L/R/T/B × L/R/T/B) nach Distanz aufsteigend sortiert.
+function rankHandlePairs(rf: any, sourceId?: string|null, targetId?: string|null) {
+  if (!sourceId || !targetId) return [];
+  const s = rf.getNode(String(sourceId));
+  const t = rf.getNode(String(targetId));
+  if (!s || !t || !s.positionAbsolute || !t.positionAbsolute) return [];
+
+  const sW = (s.width ?? (s as any).measured?.width ?? 0);
+  const sH = (s.height ?? (s as any).measured?.height ?? 0);
+  const tW = (t.width ?? (t as any).measured?.width ?? 0);
+  const tH = (t.height ?? (t as any).measured?.height ?? 0);
+
+  const sX = s.positionAbsolute.x, sY = s.positionAbsolute.y;
+  const tX = t.positionAbsolute.x, tY = t.positionAbsolute.y;
+
+  const sPts: Record<string,[number,number]> = {
+    L:[sX, sY+sH/2], R:[sX+sW, sY+sH/2], T:[sX+sW/2, sY], B:[sX+sW/2, sY+sH]
+  };
+  const tPts: Record<string,[number,number]> = {
+    L:[tX, tY+tH/2], R:[tX+tW, tY+tH/2], T:[tX+tW/2, tY], B:[tX+tW/2, tY+tH]
+  };
+
+  const pairs: Array<{src:string; tgt:string; d2:number}> = [];
+  (Object.keys(sPts) as Array<keyof typeof sPts>).forEach(sk => {
+    (Object.keys(tPts) as Array<keyof typeof tPts>).forEach(tk => {
+      const [ax,ay] = sPts[sk];
+      const [bx,by] = tPts[tk];
+      const d2 = (ax-bx)*(ax-bx) + (ay-by)*(ay-by);
+      pairs.push({ src: `${sk}-src`, tgt: `${tk}-tgt`, d2 });
+    });
+  });
+
+  pairs.sort((a,b) => a.d2 - b.d2);
+  return pairs;
+}
+
+// Wählt die erste (kürzeste) Handle-Kombi, die noch nicht in usedPairs vorkommt.
+function pickAutoHandlesAvoiding(rf: any, sourceId: string, targetId: string, usedPairs: Set<string>) {
+  const ranked = rankHandlePairs(rf, sourceId, targetId);
+  for (const p of ranked) {
+    const key = `${p.src}|${p.tgt}`;
+    if (!usedPairs.has(key)) {
+      usedPairs.add(key);
+      return { sourceHandle: p.src, targetHandle: p.tgt };
+    }
+  }
+  // Fallback: nimm die kürzeste
+  const p0 = ranked[0];
+  return p0 ? { sourceHandle: p0.src, targetHandle: p0.tgt } : {};
+}
+
+const nodeTypes = { editable: EditableNode };
+
+function Inner() {
+  const mapId = "default-map";
+  const [nodes, setNodes, onNodesChange] = useNodesState([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  const rf = useReactFlow();
+
+  // Initial: Nodes laden, dann Edges gruppiert aufteilen und pro Paar unterschiedliche Seiten vergeben
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const ns = await fetch(`/api/nodes?mapId=${mapId}`).then(r=>r.json());
+      const es = await fetch(`/api/edges?mapId=${mapId}`).then(r=>r.json());
+
+      if (!alive) return;
+      setNodes(ns.map((n:any) => ({
+        id: String(n.id),
+        type: "editable",
+        position: { x: n.x ?? 0, y: n.y ?? 0 },
+        data: { label: n.label, color: n.color ?? "#FBBF24" }
+      })));
+
+      // nach Render der Nodes: für jedes (source->target)-Paar eigene Handle-Kombis vergeben
+      requestAnimationFrame(() => {
+        if (!alive) return;
+
+        // gruppieren nach ordered key: source->target
+        const groups = new Map<string, any[]>();
+        es.forEach((e:any) => {
+          const k = `${e.sourceId}->${e.targetId}`;
+          if (!groups.has(k)) groups.set(k, []);
+          groups.get(k)!.push(e);
+        });
+
+        const nextEdges:any[] = [];
+        groups.forEach((arr, key) => {
+          const [sourceId, targetId] = key.split("->");
+          const used = new Set<string>();
+          arr.forEach((e:any) => {
+            const { sourceHandle, targetHandle } =
+              pickAutoHandlesAvoiding(rf, String(sourceId), String(targetId), used);
+            nextEdges.push({
+              id: String(e.id),
+              source: String(e.sourceId),
+              target: String(e.targetId),
+              sourceHandle,
+              targetHandle,
+              type: "bezier",
+              markerEnd: { type: MarkerType.ArrowClosed },
+            });
+          });
+        });
+
+        setEdges(nextEdges);
+      });
+    })();
+    return () => { alive = false; };
+  }, [mapId, rf, setNodes, setEdges]);
+
+  // Verbinden durch Ziehen (Drag & Drop): auch hier je (source->target)-Paar die nächste freie Seiten-Kombi wählen
+  const onConnect = useCallback((params: any) => {
+    const used = new Set<string>(
+      edges
+        .filter((e:any) => e.source === params.source && e.target === params.target)
+        .map((e:any) => `${e.sourceHandle}|${e.targetHandle}`)
+    );
+    const { sourceHandle, targetHandle } =
+      pickAutoHandlesAvoiding(rf, params.source, params.target, used);
+
+    setEdges((eds:any[]) =>
+      addEdge(
+        { ...params, sourceHandle, targetHandle, type: "bezier", markerEnd: { type: MarkerType.ArrowClosed } },
+        eds
+      )
+    );
+  }, [rf, edges, setEdges]);
+
+  // Nach Drag: betroffene Gruppen neu verteilen (damit sich parallele Kanten weiterhin nicht überlagern)
+  const onNodeDragStop = useCallback((_e:any, node:any) => {
+    setEdges((eds:any[]) => {
+      // Gruppen neu bilden
+      const groups = new Map<string, any[]>();
+      eds.forEach((e:any) => {
+        const k = `${e.source}->${e.target}`;
+        if (!groups.has(k)) groups.set(k, []);
+        groups.get(k)!.push(e);
+      });
+
+      const rebuilt:any[] = [];
+      groups.forEach((arr, key) => {
+        const [sId, tId] = key.split("->");
+        const used = new Set<string>();
+        arr.forEach((e:any) => {
+          // nur neu berechnen, wenn die Gruppe den gezogenen Knoten betrifft – ist aber günstig genug, um immer zu machen
+          const { sourceHandle, targetHandle } =
+            pickAutoHandlesAvoiding(rf, sId, tId, used);
+          rebuilt.push({ ...e, sourceHandle, targetHandle });
+        });
+      });
+      return rebuilt;
+    });
+  }, [rf, setEdges]);
+
+  return (
+    <div className="w-full h-[calc(100vh-64px)]">
+      <ReactFlow
+        nodes={nodes}
+        edges={edges}
+        onNodesChange={onNodesChange}
+        onEdgesChange={onEdgesChange}
+        onConnect={onConnect}
+        onNodeDragStop={onNodeDragStop}
+        nodeTypes={nodeTypes}
+        connectionMode={ConnectionMode.Loose}
+        defaultEdgeOptions={{ type: "bezier", markerEnd: { type: MarkerType.ArrowClosed } }}
+        fitView
+      >
+        <Background />
+        <MiniMap pannable zoomable />
+        <Controls />
+      </ReactFlow>
+    </div>
+  );
+}
+
+export default function Editor() {
+  return (
+    <ReactFlowProvider>
+      <Inner />
+    </ReactFlowProvider>
+  );
+}

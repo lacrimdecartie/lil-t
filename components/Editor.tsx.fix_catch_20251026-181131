@@ -1,0 +1,299 @@
+// @ts-nocheck
+"use client";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
+import ReactFlow, {
+  Background,
+  BackgroundVariant,
+  Controls,
+  MiniMap,
+  addEdge,
+  useEdgesState,
+  useNodesState,
+  MarkerType,
+  Connection,
+  useReactFlow,
+  ReactFlowProvider,
+  type Node as RFNode,
+  type Edge as RFEdge,
+  type EdgeMouseHandler,
+  type NodeMouseHandler,
+  type NodeDragHandler,
+  Node,
+  ConnectionMode,
+} from "reactflow";
+import { pickAutoHandles } from "@/lib/autoHandles";
+import "reactflow/dist/style.css";
+import EditableNode from "@/components/nodes/EditableNode";
+import ContextMenu, { type MenuItem } from "@/components/ContextMenu";
+import ColorSwatch from "@/components/ColorSwatch";
+import DraggableLabelEdge from "@/components/edges/DraggableLabelEdge";
+
+type NodeData = { label: string; color?: string };
+type EdgeData = { label?: string; color?: string; labelX?: number; labelY?: number };
+const defaultMapId = "default-map";
+
+type Ctx =
+  | { open: false }
+  | { open: true; kind: "canvas"; x: number; y: number; flowPos: { x: number; y: number } }
+  | { open: true; kind: "node"; x: number; y: number; nodeId: string }
+  | { open: true; kind: "edge"; x: number; y: number; edgeId: string };
+
+function EditorCanvas() {
+  const [mounted, setMounted] = useState(false);
+  const [mapId] = useState<string>(defaultMapId);
+  const [nodes, setNodes, onNodesChange] = useNodesState<NodeData>([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState<RFEdge<EdgeData>>([]);
+  const rf = useReactFlow<NodeData, EdgeData>();
+  const [ctx, setCtx] = useState<Ctx>({ open: false });
+
+  // Relation-Mode: Quelle merken
+  const [pendingSource, setPendingSource] = useState<string|null>(null);
+
+  // Inline-Umbenennen-Box
+  const [editBox, setEditBox] = useState<{open:false} | {open:true; nodeId:string; x:number; y:number; value:string}>({open:false});
+
+  useEffect(() => { setMounted(true); }, []);
+  useEffect(() => {
+    const onEsc = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setPendingSource(null);
+        if (editBox.open) setEditBox({open:false});
+      }
+    };
+    document.addEventListener("keydown", onEsc);
+    return () => document.removeEventListener("keydown", onEsc);
+  }, [editBox.open]);
+
+  const load = useCallback(async () => {
+    try {
+      const [nRes, eRes] = await Promise.all([
+        fetch(`/api/nodes?mapId=${encodeURIComponent(mapId)}`),
+        fetch(`/api/edges?mapId=${encodeURIComponent(mapId)}`),
+      ]);
+      const [n, e] = await Promise.all([nRes.json(), eRes.json()]);
+      const mappedNodes: RFNode<NodeData>[] = (Array.isArray(n) ? n : []).map((x: any) => ({
+        id: String(x.id),
+        type: "editable",
+        data: { label: String(x.label ?? ""), color: x.color ?? undefined },
+        position: { x: Number(x.x ?? 0), y: Number(x.y ?? 0) },
+      }));
+      const mappedEdges: RFEdge<EdgeData>[] = (Array.isArray(e) ? e : []).map((x: any) => ({
+        id: String(x.id),
+        source: String(x.sourceId),
+        target: String(x.targetId),
+        type: "draggableLabel",
+        data: { label: x.label ? String(x.label) : undefined, color: x.color ?? undefined, labelX: x.labelX ?? 0, labelY: x.labelY ?? 0 },
+        markerEnd: x.directed ? { type: MarkerType.ArrowClosed } : undefined,
+        style: x.color ? { stroke: String(x.color) } : undefined,
+      }));
+      setNodes(mappedNodes);
+      setEdges(mappedEdges);
+    } catch (err) {
+      console.error("[lil-T] load() failed:", err);
+    }
+  }, [mapId, setNodes, setEdges]);
+  useEffect(() => { if (mounted) load(); }, [mounted, load]);
+
+  // Node per Kontextmenü anlegen
+  const addCanvasNodeAt = useCallback(async (p: { x: number; y: number }) => {
+    const node = await fetch(`/api/nodes`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mapId, label: "Neuer Knoten", x: p.x, y: p.y, color: "#FDE68A" }),
+    }).then(r => r.json());
+    setNodes(nds => [...nds, { id: String(node.id), type: "editable", data: { label: String(node.label), color: node.color ?? undefined }, position: { x: p.x, y: p.y } }]);
+  }, [mapId, setNodes]);
+
+  // Node hinzufügen & automatisch verbinden
+  const addConnectedNode = useCallback(async (fromId: string) => {
+    const from = rf.getNode(fromId);
+    const pos = from?.position ?? { x: 0, y: 0 };
+    const newX = pos.x + 220, newY = pos.y + 80;
+    const node = await fetch(`/api/nodes`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mapId, label: "Neuer Knoten", x: newX, y: newY, color: "#FDE68A" }),
+    }).then(r => r.json());
+    setNodes(nds => [...nds, { id:String(node.id), type:"editable", data:{ label:String(node.label), color: node.color ?? undefined, small: true }, position:{ x:newX, y:newY } }]);
+    const edge = await fetch(`/api/edges`, { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ mapId, sourceId: fromId, targetId: node.id, directed: true }) }).then(r=>r.json());
+    const auto = pickAutoHandles(rf, String(edge.sourceId), String(edge.targetId));
+    setEdges((eds) => addEdge({ id:String(edge.id), source:String(edge.sourceId), target:String(edge.targetId), sourceHandle:auto.sourceHandle, targetHandle:auto.targetHandle, type:"bezier", markerEnd:{ type: MarkerType.ArrowClosed } }, eds));
+  }, [mapId, rf, setNodes, setEdges]);
+
+  // Verbinden durch Ziehen
+  const onConnect = useCallback((params: any) => {
+    const { sourceHandle, targetHandle } = pickAutoHandles(rf, params.source, params.target);
+    setEdges((eds) => addEdge({ ...params, sourceHandle, targetHandle, type: "bezier", markerEnd: { type: MarkerType.ArrowClosed } }, eds));
+  }, [rf, setEdges]);} catch {}
+  }, []);
+
+  // Kontextmenüs
+  const onNodeContextMenu: NodeMouseHandler = useCallback((e, node) => {
+    e.preventDefault(); e.stopPropagation();
+    setCtx({ open: true, kind: "node", x: e.clientX, y: e.clientY, nodeId: node.id });
+  }, []);
+  const onEdgeContextMenu: EdgeMouseHandler = useCallback((e, edge) => {
+    e.preventDefault(); e.stopPropagation();
+    setCtx({ open: true, kind: "edge", x: e.clientX, y: e.clientY, edgeId: edge.id });
+  }, []);
+  const onPaneContextMenu = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    const p = rf.screenToFlowPosition({ x: e.clientX, y: e.clientY });
+    setCtx({ open: true, kind: "canvas", x: e.clientX, y: e.clientY, flowPos: p });
+  }, [rf]);
+
+  // Node-Klick als Ziel im Relation-Mode
+  const onNodeClick = useCallback(async (_e: React.MouseEvent, node: Node<NodeData>) => {
+    if (!pendingSource) return;
+    const src = pendingSource, dst = node.id;
+    setPendingSource(null);
+    if (src === dst) return;
+    const edge = await fetch(`/api/edges`, { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ mapId, sourceId: src, targetId: dst, directed: true }) }).then(r=>r.json());
+    const auto = pickAutoHandles(rf, String(edge.sourceId), String(edge.targetId));
+    setEdges((eds) => addEdge({ id:String(edge.id), source:String(edge.sourceId), target:String(edge.targetId), sourceHandle:auto.sourceHandle, targetHandle:auto.targetHandle, type:"bezier", markerEnd:{ type: MarkerType.ArrowClosed } }, eds));
+  }, [pendingSource, mapId, setEdges]);
+
+  // Inline-Umbenennen speichern
+  const saveEditBox = useCallback(async () => {
+    if (!editBox.open) return;
+    const id = editBox.nodeId;
+    const label = (editBox.value || "").trim();
+    try {
+      await fetch(`/api/nodes/${id}`, { method:"PATCH", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ label }) });
+      setNodes(nds => nds.map(n => n.id === id ? { ...n, data: { ...(n.data||{}), label } } : n));
+    } catch {}
+    setEditBox({open:false});
+  }, [editBox, setNodes]);
+
+  const nodeTypes = useMemo(() => ({ editable: EditableNode }), []);
+  const edgeTypes = useMemo(() => ({ draggableLabel: DraggableLabelEdge }), []);
+
+  // Kontextmenüeinträge
+  const ctxItems: MenuItem[] = useMemo(() => {
+    if (!ctx.open) return [];
+
+    if (ctx.kind === "node") {
+      const nid = ctx.nodeId;
+      const current = nodes.find(n => n.id === nid);
+      const currentLabel = current?.data?.label ?? "";
+
+      const items: MenuItem[] = [
+        { type: "action", label: (pendingSource===nid ? "Relation-Modus aktiv" : "Relation von hier starten"), onClick: () => { setCtx({ open:false }); setPendingSource(nid); } },
+      ];
+
+      // Wenn Relation-Mode aktiv und dies NICHT die Quelle ist: Menüpunkt "Als Ziel verbinden"
+      if (pendingSource && pendingSource !== nid) {
+        items.push({ type:"action", label:`Als Ziel verbinden (Quelle: ${nodes.find(n=>n.id===pendingSource)?.data?.label ?? pendingSource})`, onClick: async () => {
+          setCtx({open:false});
+          const edge = await fetch(`/api/edges`, { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ mapId, sourceId: pendingSource, targetId: nid, directed: true }) }).then(r=>r.json());
+          setPendingSource(null);
+          const auto = pickAutoHandles(rf, String(edge.sourceId), String(edge.targetId));
+    setEdges((eds) => addEdge({ id:String(edge.id), source:String(edge.sourceId), target:String(edge.targetId), sourceHandle:auto.sourceHandle, targetHandle:auto.targetHandle, type:"bezier", markerEnd:{ type: MarkerType.ArrowClosed } }, eds));
+        }});
+      }
+
+      items.push(
+        { type: "action", label: "Knoten hinzufügen & verbinden", onClick: () => { setCtx({ open:false }); addConnectedNode(nid); } },
+        { type: "action", label: "Umbenennen …", onClick: () => {
+            // Inline-Box an Position des Kontextmenüs öffnen
+            setEditBox({ open:true, nodeId: nid, x: (ctx as any).x, y: (ctx as any).y, value: currentLabel });
+            setCtx({open:false});
+          } },
+        { type: "separator" },
+        { type: "custom", render: () => (<div><div className="px-2 pb-1 text-xs opacity-70">Farbe</div><ColorSwatch onPick={async (c)=>{ await fetch(`/api/nodes/${nid}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({color:c})}); setNodes(nds=>nds.map(n=>n.id===nid?({...n, data:{...n.data, color:c}}):n)); setCtx({open:false}); }}/></div>) },
+        { type: "separator" },
+        { type: "action", label: "Knoten löschen", onClick: async () => { setCtx({open:false}); await fetch(`/api/nodes/${nid}`, { method:"DELETE" }); setEdges(eds=>eds.filter(e=>e.source!==nid && e.target!==nid)); setNodes(nds=>nds.filter(n=>n.id!==nid)); if(pendingSource===nid) setPendingSource(null);} },
+      );
+      return items;
+    }
+
+    if (ctx.kind === "edge") {
+      const eid = ctx.edgeId;
+      return [
+        { type: "custom", render: () => (
+          <div className="p-2">
+            <div className="text-xs opacity-70 mb-1">Label</div>
+            <input className="w-full border rounded px-2 py-1 text-sm bg-transparent"
+              placeholder="Relationstext…" autoFocus
+              onKeyDown={async (e:any)=>{ if(e.key==="Enter"){ const v=(e.target.value||"").trim(); await fetch(`/api/edges/${eid}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({label:v})}); setEdges(eds=>eds.map(ed=>ed.id===eid?({...ed, data:{...(ed.data||{}), label:v||undefined}}):ed)); setCtx({open:false}); } }} />
+          </div>
+        ) },
+        { type: "custom", render: () => (<div><div className="px-2 pb-1 text-xs opacity-70">Farbe</div><ColorSwatch onPick={async (c)=>{ await fetch(`/api/edges/${eid}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({color:c})}); setEdges(eds=>eds.map(ed=>ed.id===eid?({...ed, style:{...(ed.style||{}), stroke:c}, data:{...(ed.data||{}), color:c}}):ed)); setCtx({open:false}); }}/></div>) },
+        { type: "separator" },
+        { type: "action", label: "Relation löschen", onClick: async () => { setCtx({open:false}); await fetch(`/api/edges/${eid}`, { method:"DELETE" }); setEdges(eds=>eds.filter(e=>e.id!==eid)); } },
+      ];
+    }
+
+    if (ctx.kind === "canvas") {
+      return [{ type: "action", label: "Knoten hier erstellen", onClick: () => { setCtx({ open: false }); addCanvasNodeAt(ctx.flowPos); } }];
+    }
+    return [];
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ctx, nodes, pendingSource, addConnectedNode, addCanvasNodeAt, setNodes, setEdges, mapId]);
+
+  if (!mounted) return <div className="p-4 text-sm opacity-70">Lade Editor …</div>;
+
+  return (
+    <div className="h-[calc(100vh-56px)] w-full">
+      <div className="flex items-center gap-2 p-2 border-b">
+        <button onClick={load} className="px-3 py-1 rounded-md border hover:bg-neutral-50 dark:hover:bg-neutral-900">↻ Aktualisieren</button>
+        <div className="text-xs opacity-60">
+          Rechtsklick: Knoten • Relation • Fläche · Doppelklick: Titel bearbeiten
+          {pendingSource && <span className="ml-3 px-2 py-0.5 rounded bg-blue-100 text-blue-800">Relation-Modus aktiv – Zielknoten anklicken (ESC = Abbrechen)</span>}
+        </div>
+      </div>
+
+      <ReactFlow
+        nodes={nodes}
+        edges={edges}
+        nodeTypes={ { editable: EditableNode } }
+        edgeTypes={ edgeTypes }
+        onNodesChange={onNodesChange}
+        onEdgesChange={onEdgesChange}
+        onNodeDragStop={onNodeDragStop}
+        onConnect={onConnect}
+        onNodeContextMenu={onNodeContextMenu}
+        onEdgeContextMenu={onEdgeContextMenu}
+        onPaneContextMenu={onPaneContextMenu}
+        onNodeClick={onNodeClick}
+        fitView
+      >
+        <MiniMap pannable zoomable />
+        <Controls />
+        <Background variant={BackgroundVariant.Dots} gap={16} size={1} />
+      </ReactFlow>
+
+      {/* Inline-Umbenennen an Cursorposition */}
+      {editBox.open && (
+        <div
+          className="fixed z-[2000]"
+          style={{ left: editBox.x, top: editBox.y, transform: "translate(-50%, -50%)" }}
+          onClick={(e)=>e.stopPropagation()}
+          onContextMenu={(e)=>{e.preventDefault(); e.stopPropagation();}}
+        >
+          <input
+            value={editBox.value}
+            onChange={(e)=>setEditBox(prev=>prev.open?{...prev, value:e.target.value}:prev)}
+            onBlur={saveEditBox}
+            onKeyDown={(e)=>{ if(e.key==="Enter") saveEditBox(); if(e.key==="Escape") setEditBox({open:false}); }}
+            autoFocus
+            className="bg-white text-sm border rounded px-2 py-1 shadow-md nodrag nowheel"
+            placeholder="Titel…"
+          />
+        </div>
+      )}
+
+      {ctx.open && <ContextMenu x={ctx.x} y={ctx.y} items={ctxItems} onClose={() => setCtx({ open: false })} />}
+    </div>
+  );
+}
+
+export default function Editor() {
+  return (
+    <ReactFlowProvider
+        defaultEdgeOptions={{ type: "straight", markerEnd: { type: MarkerType.ArrowClosed } }}
+        connectionLineType="bezier"
+        connectionLineStyle={{ stroke: "#64748b", strokeWidth: 2 }}
+>
+      <EditorCanvas />
+    </ReactFlowProvider>
+  );
+}

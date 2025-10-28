@@ -1,0 +1,242 @@
+// @ts-nocheck
+"use client";
+
+import React, { useCallback, useEffect, useMemo, useState } from "react";
+import ReactFlow, {
+  Background, Controls, MiniMap,
+  addEdge, MarkerType,
+  useNodesState, useEdgesState, useReactFlow, ReactFlowProvider,
+  ConnectionMode, type Node as RFNode, type Edge as RFEdge,
+  type NodeMouseHandler, type EdgeMouseHandler, type NodeDragHandler
+} from "reactflow";
+import "reactflow/dist/style.css";
+
+import EditableNode from "@/components/nodes/EditableNode";
+import ParallelBezier from "@/components/edges/ParallelBezier";
+import ContextMenu, { type MenuItem } from "@/components/ContextMenu";
+
+
+// == Auto-handle refresher ==
+function __applyAutoHandles(rf:any, list:any[]) {
+  return list.map((e:any) => {
+    const h = pickAutoHandles2(rf, e.source ?? e.sourceId, e.target ?? e.targetId);
+    return {
+      ...e,
+      source: String(e.source ?? e.sourceId),
+      target: String(e.target ?? e.targetId),
+      sourceHandle: h.sourceHandle,
+      targetHandle: h.targetHandle,
+    };
+  });
+}
+
+const nodeTypes = { editable: EditableNode };
+const edgeTypes = { parallel: ParallelBezier };
+
+// ---------- Auto-Handle kürzeste Seite ----------
+function pickAutoHandles2(rf: any, sourceId?: string|null, targetId?: string|null) {
+  if (!sourceId || !targetId) return {};
+  const s = rf.getNode(String(sourceId));
+  const t = rf.getNode(String(targetId));
+  if (!s || !t || !s.positionAbsolute || !t.positionAbsolute) return {};
+
+  const sW = (s.width ?? (s as any).measured?.width ?? 0);
+  const sH = (s.height ?? (s as any).measured?.height ?? 0);
+  const tW = (t.width ?? (t as any).measured?.width ?? 0);
+  const tH = (t.height ?? (t as any).measured?.height ?? 0);
+
+  const sX = s.positionAbsolute.x, sY = s.positionAbsolute.y;
+  const tX = t.positionAbsolute.x, tY = t.positionAbsolute.y;
+
+  const sPts: Record<string,[number,number]> = {
+    L:[sX, sY+sH/2], R:[sX+sW, sY+sH/2], T:[sX+sW/2, sY], B:[sX+sW/2, sY+sH]
+  };
+  const tPts: Record<string,[number,number]> = {
+    L:[tX, tY+tH/2], R:[tX+tW, tY+tH/2], T:[tX+tW/2, tY], B:[tX+tW/2, tY+tH]
+  };
+
+  const dx = (tX + tW/2) - (sX + sW/2);
+  const dy = (tY + tH/2) - (sY + sH/2);
+  const preferH = Math.abs(dx) >= Math.abs(dy);
+  const sOrder = preferH ? (dx >= 0 ? ["R","L","T","B"] : ["L","R","T","B"])
+                         : (dy >= 0 ? ["B","T","L","R"] : ["T","B","L","R"]);
+  const tOrder = preferH ? (dx >= 0 ? ["L","R","T","B"] : ["R","L","T","B"])
+                         : (dy >= 0 ? ["T","B","L","R"] : ["B","T","L","R"]);
+
+  let best: any = null;
+  for (const sk of sOrder) for (const tk of tOrder) {
+    const [ax,ay] = sPts[sk], [bx,by] = tPts[tk];
+    const d2 = (ax-bx)*(ax-bx) + (ay-by)*(ay-by);
+    const nonPref = preferH ? ((sk==="T"||sk==="B"||tk==="T"||tk==="B"))
+                            : ((sk==="L"||sk==="R"||tk==="L"||tk==="R"));
+    const score = d2 + (nonPref ? 400 : 0);
+    if (!best || score < best.score) best = { sk, tk, score };
+  }
+  return best ? { sourceHandle: `${best.sk}-src`, targetHandle: `${best.tk}-tgt` } : {};
+}
+
+// ---------- Parallele Kanten-Ranking ----------
+function rankParallels(list:any[]) {
+  const groups = new Map<string, any[]>();
+  for (const e of list) {
+    const key = `${e.source}->${e.target}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(e);
+  }
+  const out:any[] = [];
+  groups.forEach(arr => {
+    arr.sort((a,b)=> String(a.id).localeCompare(String(b.id)));
+    const n = arr.length, mid = (n-1)/2;
+    arr.forEach((e,i)=>{
+      const idx = i - mid;
+      e.type = "parallel";
+      e.data = { ...(e.data||{}), parIndex: idx };
+      out.push(e);
+    });
+  });
+  return out;
+}
+
+// ---------- Context-Menü State ----------
+type Ctx = { open:boolean; x:number; y:number };
+type NodeCtx = Ctx & { nodeId?: string };
+type EdgeCtx = Ctx & { edgeId?: string };
+
+function Inner() {
+
+  // Pane double-click -> create node at cursor (fallback if context menu fails)
+  const onPaneDouble = useCallback((e:any) => {
+    if (!e || e.detail !== 2) return; // nur echter Doppelklick
+    addNodeHere(e.clientX, e.clientY); // Screen->Flow passiert in addNodeHere
+  }, [addNodeHere]);
+
+  const mapId = "default-map";
+  const [nodes, setNodes, onNodesChange] = useNodesState([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  const rf = useReactFlow();
+
+  // Theme: je nach Uhrzeit (7–19 hell, sonst dunkel)
+  useEffect(()=>{
+    const h = new Date().getHours();
+    const theme = (h>=7 && h<19) ? "light" : "dark";
+    document.documentElement.setAttribute("data-theme", theme);
+  },[]);
+
+  // Kontextmenüs
+  const [paneCtx, setPaneCtx] = useState<Ctx>({open:false,x:0,y:0});
+  const [nodeCtx, setNodeCtx] = useState<NodeCtx>({open:false,x:0,y:0});
+  const [edgeCtx, setEdgeCtx] = useState<EdgeCtx>({open:false,x:0,y:0});
+
+  // Initiale Daten
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const ns = await fetch(`/api/nodes?mapId=${mapId}`).then(r=>r.json());
+      const es = await fetch(`/api/edges?mapId=${mapId}`).then(r=>r.json());
+      if (!alive) return;
+
+      setNodes(ns.map((n:any)=>({
+        id:String(n.id), type:"editable",
+        position:{ x:n.x??0, y:n.y??0 },
+        data:{ label:n.label, color:n.color ?? "#60A5FA" }
+      })));
+
+      const built = es.map((e:any)=>{
+        const h = pickAutoHandles2(rf, e.sourceId, e.targetId);
+        return {
+          id:String(e.id),
+          source:String(e.sourceId),
+          target:String(e.targetId),
+          sourceHandle:h.sourceHandle,
+          targetHandle:h.targetHandle,
+          type:"parallel",
+          data:{ color: e.color ?? undefined, label: e.label ?? undefined },
+          markerEnd:{ type: MarkerType.ArrowClosed }
+        };
+      });
+      setEdges(rankParallels(built));
+    })();
+
+    // __APPLY_AUTO_ON_NODES__ – kürzeste Seite bei Knotenbewegung
+    useEffect(() => {
+      setEdges((eds:any[]) => __applyAutoHandles(rf, eds));
+    }, [nodes, rf, setEdges]);
+
+    return (
+      <div className="w-full h-[calc(100vh-64px)]">
+        <ReactFlow
+          nodes={nodes}
+          edges={edges}
+          onNodesChange={onNodesChange}
+          onEdgesChange={onEdgesChange}
+          onConnect={onConnect}
+          onNodeDragStop={onNodeDragStop}
+          onNodeContextMenu={onNodeContextMenu}
+          onEdgeContextMenu={onEdgeContextMenu}
+          onPaneContextMenu={onPaneContextMenu}
+          nodeTypes={nodeTypes}
+          edgeTypes={edgeTypes}
+          connectionMode={ConnectionMode.Loose}
+          defaultEdgeOptions={{ type: "parallel", markerEnd: { type: MarkerType.ArrowClosed } }}
+          fitView
+          onPaneClick={onPaneDouble}
+        >
+          <Background variant="dots" gap={28} size={1.6} />
+          <MiniMap pannable zoomable />
+          <Controls />
+        </ReactFlow>
+
+        {/* Kontext-Menüs */}
+        <ContextMenu open={paneCtx.open} x={paneCtx.x} y={paneCtx.y} onClose={closePaneMenu} items={paneItems} />
+        <ContextMenu open={nodeCtx.open} x={nodeCtx.x} y={nodeCtx.y} onClose={closeNodeMenu} items={nodeItems} />
+        <ContextMenu open={edgeCtx.open} x={edgeCtx.x} y={edgeCtx.y} onClose={closeEdgeMenu} items={edgeItems} />
+      </div>
+    );
+  }
+
+export default function Editor() {
+  return (
+    <ReactFlowProvider>
+      <Inner />
+    </ReactFlowProvider>
+  );
+}
+
+// == Robust pickAutoHandles v2 (nur dx/dy + Bias) ==
+;
+  const s = rf.getNode(String(sourceId));
+  const t = rf.getNode(String(targetId));
+  if (!s || !t || !s.positionAbsolute || !t.positionAbsolute) return {};
+
+  // Fallback-Dimensionen, falls width/height noch 0 sind
+  const SW = Number((s as any).width ?? 180), SH = Number((s as any).height ?? 80);
+  const TW = Number((t as any).width ?? 180), TH = Number((t as any).height ?? 80);
+
+  const sCX = s.positionAbsolute.x + SW/2;
+  const sCY = s.positionAbsolute.y + SH/2;
+  const tCX = t.positionAbsolute.x + TW/2;
+  const tCY = t.positionAbsolute.y + TH/2;
+
+  const dx = tCX - sCX;
+  const dy = tCY - sCY;
+  const H = Math.abs(dx), V = Math.abs(dy);
+  const BIAS = 32; // px
+
+  let sKey = "R", tKey = "L";
+
+  if (H >= V + BIAS) {
+    sKey = dx >= 0 ? "R" : "L";
+    tKey = dx >= 0 ? "L" : "R";
+  } else if (V >= H + BIAS) {
+    sKey = dy >= 0 ? "B" : "T";
+    tKey = dy >= 0 ? "T" : "B";
+  } else {
+    // diagonal -> Quadrantenlogik
+    if (dx >= 0 && dy < 0) { sKey = "R"; tKey = "B"; }
+    else if (dx >= 0 && dy >= 0) { sKey = "R"; tKey = "T"; }
+    else if (dx < 0 && dy < 0) { sKey = "L"; tKey = "B"; }
+    else { sKey = "L"; tKey = "T"; }
+  }
+
+  return { sourceHandle: `${sKey}-src`, targetHandle: `${tKey}-tgt` };
+}

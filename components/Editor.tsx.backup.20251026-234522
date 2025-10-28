@@ -1,0 +1,376 @@
+// @ts-nocheck
+"use client";
+
+import React, { useCallback, useEffect, useMemo, useState } from "react";
+import ReactFlow, {
+  Background, Controls, MiniMap,
+  addEdge, MarkerType,
+  useNodesState, useEdgesState, useReactFlow, ReactFlowProvider,
+  ConnectionMode, type Node as RFNode, type Edge as RFEdge,
+  type NodeMouseHandler, type EdgeMouseHandler, type NodeDragHandler
+} from "reactflow";
+import "reactflow/dist/style.css";
+
+import EditableNode from "@/components/nodes/EditableNode";
+import ParallelBezier from "@/components/edges/ParallelBezier";
+import ContextMenu, { type MenuItem } from "@/components/ContextMenu";
+
+// --- Auto-Handle-Picker: wählt für zwei Knoten die kürzeste Seiten-Kombi ---
+function pickAutoHandles(rf: any, sourceId?: string|null, targetId?: string|null) {
+  if (!sourceId || !targetId) return {};
+  const s = rf.getNode(String(sourceId));
+  const t = rf.getNode(String(targetId));
+  if (!s || !t || !s.positionAbsolute || !t.positionAbsolute) return {};
+
+  const sW = (s.width ?? (s as any).measured?.width ?? 0);
+  const sH = (s.height ?? (s as any).measured?.height ?? 0);
+  const tW = (t.width ?? (t as any).measured?.width ?? 0);
+  const tH = (t.height ?? (t as any).measured?.height ?? 0);
+
+  const sX = s.positionAbsolute.x, sY = s.positionAbsolute.y;
+  const tX = t.positionAbsolute.x, tY = t.positionAbsolute.y;
+
+  const sPts: Record<string,[number,number]> = {
+    L:[sX, sY+sH/2], R:[sX+sW, sY+sH/2], T:[sX+sW/2, sY], B:[sX+sW/2, sY+sH]
+  };
+  const tPts: Record<string,[number,number]> = {
+    L:[tX, tY+tH/2], R:[tX+tW, tY+tH/2], T:[tX+tW/2, tY], B:[tX+tW/2, tY+tH]
+  };
+
+  // Heuristik: bevorzuge horizontale Kanten, wenn dx dominanter ist, sonst vertikale
+  const dx = (tX + tW/2) - (sX + sW/2);
+  const dy = (tY + tH/2) - (sY + sH/2);
+  const preferH = Math.abs(dx) >= Math.abs(dy);
+  const sOrder = preferH ? (dx >= 0 ? ["R","L","T","B"] : ["L","R","T","B"])
+                         : (dy >= 0 ? ["B","T","L","R"] : ["T","B","L","R"]);
+  const tOrder = preferH ? (dx >= 0 ? ["L","R","T","B"] : ["R","L","T","B"])
+                         : (dy >= 0 ? ["T","B","L","R"] : ["B","T","L","R"]);
+
+  let best: any = null;
+  for (const sk of sOrder) {
+    for (const tk of tOrder) {
+      const [ax,ay] = sPts[sk];
+      const [bx,by] = tPts[tk];
+      const d2 = (ax-bx)*(ax-bx) + (ay-by)*(ay-by);
+      const nonPref = preferH ? ((sk==="T"||sk==="B"||tk==="T"||tk==="B"))
+                              : ((sk==="L"||sk==="R"||tk==="L"||tk==="R"));
+      const score = d2 + (nonPref ? 400 : 0);
+      if (!best || score < best.score) best = { sk, tk, score };
+    }
+  }
+  return best ? { sourceHandle: `${best.sk}-src`, targetHandle: `${best.tk}-tgt` } : {};
+}
+
+// Parallele Kanten leicht staffeln (parIndex)
+function rankParallels(list: any[]) {
+  const out = [...list];
+  const groups = new Map<string, number[]>();
+  out.forEach((e, i) => {
+    const key = `${e.source}|${e.target}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(i);
+  });
+  for (const idxs of groups.values()) {
+    if (idxs.length <= 1) continue;
+    const n = idxs.length;
+    const mid = (n - 1) / 2;
+    idxs.sort((a, b) => out[a].id.localeCompare(out[b].id));
+    idxs.forEach((i, k) => {
+      out[i] = { ...out[i], data: { ...(out[i].data ?? {}), parIndex: k - mid } };
+    });
+  }
+  return out;
+}
+
+const nodeTypes = { editable: EditableNode };
+const edgeTypes = { parallel: ParallelBezier };
+
+function Inner() {
+  const mapId = "default-map";
+  const [nodes, setNodes, onNodesChange] = useNodesState([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  const rf = useReactFlow();
+
+  // Kontextmenü-State
+  const [paneCtx, setPaneCtx] = useState<{open:boolean,x:number,y:number}>({open:false,x:0,y:0});
+  const [nodeCtx, setNodeCtx] = useState<{open:boolean,x:number,y:number,nodeId?:string}>({open:false,x:0,y:0});
+  const [edgeCtx, setEdgeCtx] = useState<{open:boolean,x:number,y:number,edgeId?:string}>({open:false,x:0,y:0});
+
+  // Initial: Nodes laden, dann Edges mit Auto-Handles setzen
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const ns = await fetch(`/api/nodes?mapId=${mapId}`).then(r=>r.json());
+      const es = await fetch(`/api/edges?mapId=${mapId}`).then(r=>r.json());
+
+      if (!alive) return;
+      setNodes(ns.map((n:any) => ({
+        id: String(n.id),
+        type: "editable",
+        position: { x: n.x ?? 0, y: n.y ?? 0 },
+        data: { label: n.label, color: n.color ?? "#FBBF24" }
+      })));
+
+      requestAnimationFrame(() => {
+        if (!alive) return;
+        const list = es.map((e:any) => {
+          const h = pickAutoHandles(rf, e.sourceId, e.targetId);
+          return {
+            id: String(e.id),
+            source: String(e.sourceId),
+            target: String(e.targetId),
+            sourceHandle: h.sourceHandle,
+            targetHandle: h.targetHandle,
+            type: "parallel",
+            data: { label: e.label ?? undefined },
+            style: e.color ? { stroke: e.color, strokeWidth: 2 } : undefined,
+            markerEnd: { type: MarkerType.ArrowClosed },
+          };
+        });
+        setEdges(rankParallels(list));
+      });
+    })();
+    return () => { alive = false; };
+  }, [mapId, rf, setNodes, setEdges]);
+
+  // Verbinden durch Ziehen (Drag & Drop)
+  const onConnect = useCallback((params: any) => {
+  const { sourceHandle, targetHandle } = pickAutoHandles(rf, params.source, params.target);
+  setEdges((eds: any[]) => rankParallels(
+    addEdge(
+      { ...params, sourceHandle, targetHandle, type: "parallel", markerEnd: { type: MarkerType.ArrowClosed } },
+      eds
+    )
+  ));
+}, [rf, setEdges]);
+}, [rf, setEdges]);
+
+  // Nach Drag: betroffene Edges neu ausrichten (kürzeste Strecke)
+  const onNodeDragStop: NodeDragHandler = useCallback((_e, node) => {// Position speichern
+    fetch(`/api/nodes/${node.id}`, {
+      method:"PATCH", headers:{ "Content-Type":"application/json" },
+      body: JSON.stringify({ x: node.position.x, y: node.position.y })
+    }).catch(()=>{});
+  }, [rf, setEdges]);
+
+  // Pane-Rechtsklick: leeres Kontextmenü (neuen Knoten)
+  const onPaneContextMenu = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    setPaneCtx({ open: true, x: e.clientX, y: e.clientY });
+  }, []);
+  const closePaneMenu = useCallback(() => setPaneCtx(s => ({...s, open:false})), []);
+
+  // Node/Edge Kontextmenüs
+  const onNodeContextMenu: NodeMouseHandler = useCallback((e, node) => {
+    e.preventDefault(); e.stopPropagation();
+    setNodeCtx({ open: true, x: e.clientX, y: e.clientY, nodeId: node.id });
+  }, []);
+  const onEdgeContextMenu: EdgeMouseHandler = useCallback((e, edge) => {
+    e.preventDefault(); e.stopPropagation();
+    setEdgeCtx({ open: true, x: e.clientX, y: e.clientY, edgeId: edge.id });
+  }, []);
+  const closeNodeMenu = useCallback(() => setNodeCtx(s => ({...s, open:false})), []);
+  const closeEdgeMenu = useCallback(() => setEdgeCtx(s => ({...s, open:false})), []);
+
+  // Aktionen: Pane
+  const paneItems: MenuItem[] = useMemo(() => [
+    {
+      type: "action",
+      label: "Knoten hinzufügen",
+      onClick: async () => {
+        const bounds = (document.querySelector(".react-flow__renderer") as HTMLElement)?.getBoundingClientRect();
+        const px = paneCtx.x - (bounds?.left ?? 0);
+        const py = paneCtx.y - (bounds?.top ?? 0);
+        const pos = rf.project({ x: px, y: py });
+
+        const node = await fetch(`/api/nodes`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mapId, label: "Neuer Knoten", x: pos.x, y: pos.y, color: "#FDE68A" })
+        }).then(r=>r.json());
+
+        setNodes(nds => [...nds, {
+          id:String(node.id), type:"editable",
+          data:{ label:String(node.label), color: node.color ?? "#FDE68A" },
+          position:{ x:pos.x, y:pos.y }
+        }]);
+      }
+    }
+  ], [paneCtx.x, paneCtx.y, mapId, rf, setNodes]);
+
+  // Aktionen: Node
+  const nodeItems: MenuItem[] = useMemo(() => {
+    if (!nodeCtx.nodeId) return [];
+    const n = nodes.find(n => n.id === nodeCtx.nodeId);
+    const currentColor = (n?.data?.color as string) ?? "#FDE68A";
+
+    return [
+      {
+        type: "action",
+        label: "Knoten löschen",
+        onClick: async () => {
+          await fetch(`/api/nodes/${nodeCtx.nodeId}`, { method:"DELETE" });
+          setNodes(nds => nds.filter(n => n.id !== nodeCtx.nodeId));
+          setEdges(eds => eds.filter(e => e.source !== nodeCtx.nodeId && e.target !== nodeCtx.nodeId));
+        }
+      },
+      {
+        type: "action",
+        label: "Knoten hinzufügen (mit Relation)",
+        onClick: async () => {
+          const base = nodes.find(n => n.id === nodeCtx.nodeId);
+          if (!base) return;
+          const newX = base.position.x + 220, newY = base.position.y + 80;
+
+          const node = await fetch(`/api/nodes`, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ mapId, label: "Neuer Knoten", x: newX, y: newY, color: "#FDE68A" })
+          }).then(r=>r.json());
+
+          setNodes(nds => [...nds, {
+            id:String(node.id), type:"editable",
+            data:{ label:String(node.label), color: node.color ?? "#FDE68A" },
+            position:{ x:newX, y:newY }
+          }]);
+
+          const edge = await fetch(`/api/edges`, {
+            method:"POST", headers:{ "Content-Type":"application/json" },
+            body: JSON.stringify({ mapId, sourceId: base.id, targetId: node.id, directed: true })
+          }).then(r=>r.json());
+
+          const h = pickAutoHandles(rf, String(edge.sourceId), String(edge.targetId));
+          setEdges(eds => rankParallels([...eds, {
+            id:String(edge.id), source:String(edge.sourceId), target:String(edge.targetId),
+            sourceHandle: h.sourceHandle, targetHandle: h.targetHandle,
+            type:"parallel", data:{}, markerEnd:{ type: MarkerType.ArrowClosed }
+          }]));
+        }
+      },
+      { type: "separator" },
+      {
+        type: "action",
+        label: "Umbenennen",
+        onClick: async () => {
+          const current = (n?.data?.label as string) ?? "";
+          const name = window.prompt("Neuer Name:", current);
+          if (name == null) return;
+          await fetch(`/api/nodes/${nodeCtx.nodeId}`, {
+            method:"PATCH", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ label: name })
+          });
+          setNodes(nds => nds.map(nn => nn.id===nodeCtx.nodeId ? { ...nn, data:{ ...nn.data, label: name } } : nn));
+        }
+      },
+      {
+        type: "color",
+        label: "Farbe",
+        value: currentColor,
+        onChange: async (hex:string) => {
+          await fetch(`/api/nodes/${nodeCtx.nodeId}`, {
+            method:"PATCH", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ color: hex })
+          });
+          setNodes(nds => nds.map(nn => nn.id===nodeCtx.nodeId ? { ...nn, data:{ ...nn.data, color: hex } } : nn));
+        }
+      }
+    ];
+  }, [nodeCtx.nodeId, nodeCtx.x, nodeCtx.y, nodes, mapId, rf, setNodes, setEdges]);
+
+  // Aktionen: Edge
+  const edgeItems: MenuItem[] = useMemo(() => {
+    if (!edgeCtx.edgeId) return [];
+    const e = edges.find(e => e.id === edgeCtx.edgeId);
+    const curStroke = (e?.style?.stroke as string) ?? "#64748b";
+    const curLabel  = (e?.data?.label as string) ?? "";
+
+    return [
+      {
+        type: "action",
+        label: "Relation löschen",
+        onClick: async () => {
+          await fetch(`/api/edges/${edgeCtx.edgeId}`, { method:"DELETE" });
+          setEdges(eds => eds.filter(x => x.id !== edgeCtx.edgeId));
+        }
+      },
+      {
+        type: "action",
+        label: "Text setzen",
+        onClick: async () => {
+          const txt = window.prompt("Relation-Text:", curLabel) ?? "";
+          await fetch(`/api/edges/${edgeCtx.edgeId}`, {
+            method:"PATCH", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ label: txt })
+          });
+          setEdges(eds => eds.map(x => x.id===edgeCtx.edgeId ? { ...x, data:{ ...(x.data ?? {}), label: txt } } : x));
+        }
+      },
+      {
+        type: "color",
+        label: "Farbe",
+        value: curStroke,
+        onChange: async (hex:string) => {
+          await fetch(`/api/edges/${edgeCtx.edgeId}`, {
+            method:"PATCH", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ color: hex })
+          });
+          setEdges(eds => eds.map(x => x.id===edgeCtx.edgeId ? { ...x, style:{ ...(x.style ?? {}), stroke: hex, strokeWidth: 2 } } : x));
+        }
+      }
+    ];
+  }, [edgeCtx.edgeId, edges, setEdges]);
+
+  return (
+    <div className="w-full h-[calc(100vh-64px)]">
+      <ReactFlow
+        nodes={nodes}
+        edges={edges}
+        onNodesChange={onNodesChange}
+        onEdgesChange={onEdgesChange}
+        onConnect={onConnect}
+        onNodeDragStop={onNodeDragStop}
+        onPaneContextMenu={onPaneContextMenu}
+        onNodeContextMenu={onNodeContextMenu}
+        onEdgeContextMenu={onEdgeContextMenu}
+        nodeTypes={nodeTypes}
+        edgeTypes={edgeTypes}
+        connectionMode={ConnectionMode.Loose}
+        defaultEdgeOptions={{ type: "parallel", markerEnd: { type: MarkerType.ArrowClosed } }}
+        fitView
+      >
+        <Background />
+        <MiniMap pannable zoomable />
+        <Controls />
+      </ReactFlow>
+
+      {/* Pane-Menü */}
+      <ContextMenu
+        open={paneCtx.open}
+        x={paneCtx.x}
+        y={paneCtx.y}
+        onClose={closePaneMenu}
+        items={paneItems}
+      />
+
+      {/* Node-Menü */}
+      <ContextMenu
+        open={nodeCtx.open}
+        x={nodeCtx.x}
+        y={nodeCtx.y}
+        onClose={closeNodeMenu}
+        items={nodeItems}
+      />
+
+      {/* Edge-Menü */}
+      <ContextMenu
+        open={edgeCtx.open}
+        x={edgeCtx.x}
+        y={edgeCtx.y}
+        onClose={closeEdgeMenu}
+        items={edgeItems}
+      />
+    </div>
+  );
+}
+
+export default function Editor() {
+  return (
+    <ReactFlowProvider>
+      <Inner />
+    </ReactFlowProvider>
+  );
+}
