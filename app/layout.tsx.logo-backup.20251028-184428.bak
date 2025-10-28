@@ -1,22 +1,16 @@
 import "./globals.css";
 import type { Metadata } from "next";
-import AppHeader from "@/components/AppHeader";
 
 export const metadata: Metadata = {
   title: "lil-T",
-  description: "Mind maps, simply done.",
-  icons: { icon: "/favicon.png", apple: "/favicon.png" },
+  description: "Mindmap/Concept Map Editor with N:N relations",
   manifest: "/manifest.json",
-  themeColor: "#ffffff",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="de">
-      <body>
-        <AppHeader />
-        {children}
-      </body>
+      <body>{children}</body>
     </html>
   );
 }

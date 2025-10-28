@@ -1,0 +1,21 @@
+// @ts-nocheck
+import React from "react";
+
+export default function AppHeader() {
+  return (
+    <header
+      className="sticky top-0 z-50 h-[52px] flex items-center px-4
+                 backdrop-blur-md bg-white/70 border-b border-black/5"
+      role="banner"
+      aria-label="App Header"
+    >
+      <img
+        src="/favicon.png"
+        alt="lil-T"
+        className="h-7 w-7 rounded-md shadow-sm"
+        draggable={false}
+      />
+      {/* kein Text, keine Zusatz-Actions */}
+    </header>
+  );
+}
