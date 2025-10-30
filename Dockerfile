@@ -1,6 +1,7 @@
 # --- Builder ---
 FROM node:20-bookworm-slim AS builder
 WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates openssl libssl3 && rm -rf /var/lib/apt/lists/*
 
 # pnpm für schnellere Builds
 RUN corepack enable && corepack prepare pnpm@9.0.0 --activate
@@ -11,12 +12,14 @@ RUN pnpm install
 
 COPY . .
 # Prisma Client generieren vor dem Build
+ENV PRISMA_ENGINES_TARGET=debian-openssl-3.0.x
 RUN pnpm prisma generate
 RUN pnpm build
 
 # --- Runner ---
 FROM node:20-bookworm-slim AS runner
 WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates openssl libssl3 && rm -rf /var/lib/apt/lists/*
 ENV NODE_ENV=production
 ENV DATABASE_URL=file:/app/data/app.db
 

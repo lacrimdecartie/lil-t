@@ -1,3 +1,4 @@
+'use client'
 // @ts-nocheck
 "use client";
 
@@ -9,11 +10,14 @@ import ReactFlow, {
   ConnectionMode, type Node as RFNode, type Edge as RFEdge,
   type NodeDragHandler, type NodeMouseHandler, type EdgeMouseHandler
 } from "reactflow";
+import { BackgroundVariant } from "reactflow";
 import "reactflow/dist/style.css";
 
 import EditableNode from "@/components/nodes/EditableNode";
 import ParallelBezier from "@/components/edges/ParallelBezier";
 import ContextMenu, { type MenuItem } from "@/components/ContextMenu";
+type AppEdgeData = { label?: string; parallelIndex?: number; parallelCount?: number };
+type AppNodeData = { label: string; color: any };
 
 const nodeTypes = { editable: EditableNode };
 const edgeTypes = { parallel: ParallelBezier };
@@ -56,24 +60,25 @@ function pickAutoHandles2(rf: any, sourceId?: string|null, targetId?: string|nul
 }
 
 /** ---------- Parallele Kanten-Ranking ---------- */
-function rankParallels(list:any[]) {
-  const groups = new Map<string, any[]>();
-  for (const e of list) {
-    const key = `${e.source}->${e.target}`; // richtungssensitiv
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key)!.push(e);
+function rankParallels(eds: RFEdge<AppEdgeData>[]): RFEdge<AppEdgeData>[] {
+  // gruppiere nach gerichteter Kante: source->target
+  const groups = new Map<string, RFEdge<AppEdgeData>[]>();
+  for (const e of eds) {
+    const key = `${e.source}->${e.target}`;
+    const arr = groups.get(key) ?? []; arr.push(e); groups.set(key, arr);
   }
-  const out:any[] = [];
-  groups.forEach(arr => {
-    arr.sort((a,b)=> String(a.id).localeCompare(String(b.id)));
-    const n = arr.length, mid = (n-1)/2;
-    arr.forEach((e,i)=>{
-      const idx = i - mid;
-      e.type = "parallel";
-      e.data = { ...(e.data||{}), parIndex: idx, color: e.data?.color, label: e.data?.label };
-      out.push(e);
+  const out: RFEdge<AppEdgeData>[] = [];
+  for (const [, arr] of groups) {
+    const count = arr.length;
+    // stabile Reihenfolge (optional nach id)
+    arr.sort((a,b)=>String(a.id).localeCompare(String(b.id)));
+    arr.forEach((e, i) => {
+      out.push({
+        ...e,
+        data: { ...(e.data ?? {}), parallelIndex: i, parallelCount: count },
+      } as RFEdge<AppEdgeData>);
     });
-  });
+  }
   return out;
 }
 
@@ -98,8 +103,8 @@ type EdgeCtx = Ctx & { edgeId?: string };
 
 function Inner() {
   const mapId = "default-map";
-  const [nodes, setNodes, onNodesChange] = useNodesState<RFNode[]>([]);
-  const [edges, setEdges, onEdgesChange] = useEdgesState<RFEdge[]>([]);
+  const [nodes, setNodes, onNodesChange] = useNodesState<AppNodeData>([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState<AppEdgeData>([]);
   const rf = useReactFlow();
 
   // Theme: je nach Uhrzeit (7–19 hell, sonst dunkel)
@@ -111,7 +116,7 @@ function Inner() {
 
   // Kontextmenüs
   const [paneCtx, setPaneCtx] = useState<Ctx>({open:false,x:0,y:0});
-  const [nodeCtx, setNodeCtx] = useState<NodeCtx>({open:false,x:0,y:0});
+  const [nodeCtx, setNodeCtx] = useState<NodeCtx>({ open:false,x:0,y:0});
   const [edgeCtx, setEdgeCtx] = useState<EdgeCtx>({open:false,x:0,y:0});
 
   // Initiale Daten
@@ -141,12 +146,12 @@ function Inner() {
           markerEnd:{ type: MarkerType.ArrowClosed }
         };
       });
-      setEdges(rankParallels(built));
+      setEdges(rankParallels(built as RFEdge<AppEdgeData>[]));
     })();
     return ()=>{ alive=false; };
   }, [mapId, rf, setNodes, setEdges]);
 
-  // Kanten bei Node-Änderungen neu ausrichten (kürzeste Seite)
+  // Kanten bei RFNode-Änderungen neu ausrichten (kürzeste Seite)
   useEffect(() => {
     setEdges((eds:any[]) => __applyAutoHandles(rf, eds));
   }, [nodes, rf, setEdges]);
@@ -230,7 +235,7 @@ const onConnectPersist = useCallback(async (params: any) => {
     const node = await fetch(`/api/nodes`,{
       method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify(body)
     }).then(r=>r.json());
-    setNodes(nds => [...nds,{
+    setNodes((nds: RFNode<AppNodeData>[]) => [...nds,{
       id:String(node.id), type:"editable",
       data:{ label:String(node.label), color: node.color ?? body.color },
       position:{ x: node.x ?? body.x, y: node.y ?? body.y }
@@ -258,7 +263,7 @@ const onConnectPersist = useCallback(async (params: any) => {
   const closeNodeMenu = useCallback(()=> setNodeCtx(s=>({...s,open:false})),[]);
   const closeEdgeMenu = useCallback(()=> setEdgeCtx(s=>({...s,open:false})),[]);
 
-  // Node-Aktionen
+  // RFNode-Aktionen
   const addNodeFromNode = useCallback(async (fromId:string)=>{
     const from = rf.getNode(fromId);
     const base = from?.positionAbsolute ?? {x:0,y:0};
@@ -268,7 +273,7 @@ const onConnectPersist = useCallback(async (params: any) => {
       body: JSON.stringify({ mapId, label:"Neuer Knoten", x:newX, y:newY, color:"#60A5FA" })
     }).then(r=>r.json());
 
-    setNodes(nds => [...nds,{
+    setNodes((nds: RFNode<AppNodeData>[]) => [...nds,{
       id:String(node.id), type:"editable",
       data:{ label:String(node.label), color: node.color ?? "#60A5FA" },
       position:{ x:newX, y:newY }
@@ -280,7 +285,7 @@ const onConnectPersist = useCallback(async (params: any) => {
     }).then(r=>r.json());
 
     const auto = pickAutoHandles2(rf, String(edge.sourceId), String(edge.targetId));
-    setEdges(eds => rankParallels([...eds,{
+    setEdges((eds: RFEdge<AppEdgeData>[]) => rankParallels([...eds,{
       id:String(edge.id), source:String(edge.sourceId), target:String(edge.targetId),
       sourceHandle:auto.sourceHandle, targetHandle:auto.targetHandle,
       type:"parallel", data:{}, markerEnd:{ type: MarkerType.ArrowClosed }
@@ -289,15 +294,15 @@ const onConnectPersist = useCallback(async (params: any) => {
 
   const deleteNode = useCallback(async (nodeId:string)=>{
     await fetch(`/api/nodes/${nodeId}`,{ method:"DELETE" }).catch(()=>{});
-    setNodes(nds => nds.filter((n:any)=>n.id!==nodeId));
-    setEdges(eds => eds.filter((e:any)=> e.source!==nodeId && e.target!==nodeId ));
+    setNodes((nds: RFNode<AppNodeData>[]) => nds.filter((n:any)=>n.id!==nodeId));
+    setEdges((eds: RFEdge<AppEdgeData>[]) => eds.filter((e:any)=> e.source!==nodeId && e.target!==nodeId ));
   },[setNodes,setEdges]);
 
   const renameNode = useCallback(async (nodeId:string)=>{
     const current = nodes.find((n:any)=>n.id===nodeId)?.data?.label ?? "";
     const next = window.prompt("Neuer Name:", current);
     if (next==null) return;
-    setNodes(nds => nds.map((n:any)=> n.id===nodeId ? { ...n, data:{...n.data, label: next} } : n));
+    setNodes((nds: RFNode<AppNodeData>[]) => nds.map((n:any)=> n.id===nodeId ? { ...n, data:{...n.data, label: next} } : n));
     await fetch(`/api/nodes/${nodeId}`,{
       method:"PATCH", headers:{ "Content-Type":"application/json" },
       body: JSON.stringify({ label: next })
@@ -305,7 +310,7 @@ const onConnectPersist = useCallback(async (params: any) => {
   },[nodes,setNodes]);
 
   const colorNode = useCallback(async (nodeId:string, hex:string)=>{
-    setNodes(nds => nds.map((n:any)=> n.id===nodeId ? { ...n, data:{...n.data, color: hex} } : n));
+    setNodes((nds: RFNode<AppNodeData>[]) => nds.map((n:any)=> n.id===nodeId ? { ...n, data:{...n.data, color: hex} } : n));
     await fetch(`/api/nodes/${nodeId}`,{
       method:"PATCH", headers:{ "Content-Type":"application/json" },
       body: JSON.stringify({ color: hex })
@@ -315,14 +320,14 @@ const onConnectPersist = useCallback(async (params: any) => {
   // Edge-Aktionen
   const deleteEdge = useCallback(async (edgeId:string)=>{
     await fetch(`/api/edges/${edgeId}`,{ method:"DELETE" }).catch(()=>{});
-    setEdges(eds => eds.filter((e:any)=> e.id!==edgeId));
+    setEdges((eds: RFEdge<AppEdgeData>[]) => eds.filter((e:any)=> e.id!==edgeId));
   },[setEdges]);
 
   const labelEdge = useCallback(async (edgeId:string)=>{
     const current = edges.find((e:any)=>e.id===edgeId)?.data?.label ?? "";
     const next = window.prompt("Relation-Text:", current);
     if (next==null) return;
-    setEdges(eds => eds.map((e:any)=> e.id===edgeId ? { ...e, data:{ ...(e.data||{}), label: next } } : e));
+    setEdges((eds: RFEdge<AppEdgeData>[]) => eds.map((e:any)=> e.id===edgeId ? { ...e, data:{ ...(e.data||{}), label: next } } : e));
     await fetch(`/api/edges/${edgeId}`,{
       method:"PATCH", headers:{ "Content-Type":"application/json" },
       body: JSON.stringify({ label: next })
@@ -330,7 +335,7 @@ const onConnectPersist = useCallback(async (params: any) => {
   },[edges,setEdges]);
 
   const colorEdge = useCallback(async (edgeId:string, hex:string)=>{
-    setEdges(eds => rankParallels(eds.map((e:any)=> e.id===edgeId ? { ...e, data:{ ...(e.data||{}), color: hex } } : e)));
+    setEdges((eds: RFEdge<AppEdgeData>[]) => rankParallels(eds.map((e:any)=> e.id===edgeId ? { ...e, data:{ ...(e.data||{}), color: hex } } : e)));
     await fetch(`/api/edges/${edgeId}`,{
       method:"PATCH", headers:{ "Content-Type":"application/json" },
       body: JSON.stringify({ color: hex })
@@ -374,7 +379,7 @@ const onConnectPersist = useCallback(async (params: any) => {
         fitView
         onPaneClick={onPaneDouble}
       >
-        <Background variant="dots" gap={28} size={1.6} />
+        <Background variant={BackgroundVariant.Dots} gap={28} size={1.6} />
         <MiniMap pannable zoomable />
         <Controls />
       </ReactFlow>

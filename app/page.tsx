@@ -1,6 +1,7 @@
-import dynamic from "next/dynamic";
+'use client'
+import nextDynamic from "next/dynamic";
 
-const Editor = dynamic(() => import("@/components/Editor"), { ssr: false });
+const Editor = nextDynamic(() => import("@/components/Editor"), { ssr: false });
 
 export default function Page() {
   return (
@@ -9,3 +10,5 @@ export default function Page() {
     </main>
   );
 }
+
+export const dynamic = 'force-dynamic';

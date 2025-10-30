@@ -1,17 +1,19 @@
+# build / deps
 node_modules/
 .next/
-out/
+.out/
 dist/
-*.log
+coverage/
 pnpm-lock.yaml
-npm-debug.log*
-yarn-error.log*
-.env
-.env.local
-.env.*.local
+
+# runtime data
 data/
-!data/.gitkeep
-*.sqlite*
-*.db*
-.DS_Store
-Thumbs.db
+app/data/
+*.db
+*.sqlite
+
+# docker artifacts
+*.log
+
+# backups from scripts
+_backups/
