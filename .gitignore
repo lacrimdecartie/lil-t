@@ -1,0 +1,17 @@
+node_modules/
+client/dist/
+server/node_modules/
+*.log
+npm-debug.log*
+pnpm-lock.yaml
+yarn.lock
+.env
+data/
+uploads/
+tmp/
+*.sqlite
+*.db
+*.db-shm
+*.db-wal
+*.pid
+.DS_Store

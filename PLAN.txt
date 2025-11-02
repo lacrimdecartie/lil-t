@@ -1,0 +1,10 @@
+Phase 1: Basis & Auth (Express, SQLite, JWT, /healthz)
+Phase 2: Maps CRUD
+Phase 3: React Flow Canvas (Grundgerüst)
+Phase 4: Nodes CRUD + Positionen
+Phase 5: Edges CRUD + Direction Toggle
+Phase 6: Context-Menüs + Theme
+Phase 7: Bilder + Upload/Kamera
+Phase 8: CSV Import/Export
+Phase 9: Sharing-Links
+Phase 10: Seed-Daten, Healthcheck, Tests
