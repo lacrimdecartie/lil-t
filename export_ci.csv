@@ -1,0 +1,5 @@
+type,id,label,x,y,description,image_path
+node,4,A,140,140,,
+node,5,B,380,160,,
+type,id,source,target,label,directed
+edge,3,4,5,rel-ci,0

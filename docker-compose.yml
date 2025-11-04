@@ -1,0 +1,27 @@
+services:
+  lil-t:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: lil-t:local
+    container_name: lil-t
+    ports:
+      - "39093:39093"
+    environment:
+      - NODE_ENV=production
+      - APP_PORT=39093
+      - DB_CLIENT=sqlite
+      - SQLITE_PATH=/data/app.db
+      - ADMIN_USER=${ADMIN_USER:-admin}
+      - ADMIN_PASS=${ADMIN_PASS:-admin}
+      - JWT_SECRET=${JWT_SECRET:-a326b58d7e107c7b7532335c8bfc86f1}
+      - UPLOAD_DIR=/data/uploads
+    volumes:
+      - /mnt/user/appdata/lil-t:/app
+      - /mnt/user/appdata/lil-t/data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:39093/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
